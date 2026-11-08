@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: discovery-server
+server:
+  port: 8761
+  shutdown: graceful
+eureka:
+  instance:
+    hostname: ${EUREKA_HOSTNAME:localhost}
+  client:
+    register-with-eureka: false
+    fetch-registry: false
+  server:
+    enable-self-preservation: ${EUREKA_SELF_PRESERVATION:true}
+    response-cache-update-interval-ms: 5000
+management:
+  endpoints.web.exposure.include: health,info,prometheus
+  endpoint.health.probes.enabled: true
+  metrics.tags.application: ${spring.application.name}
+  tracing.sampling.probability: ${TRACING_SAMPLING:1.0}
+  otlp.tracing.endpoint: ${OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}

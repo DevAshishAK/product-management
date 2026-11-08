@@ -1,0 +1,12 @@
+server:
+  port: 8087
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/notificationdb}
+    username: ${DB_USER:notification_svc}
+    password: ${DB_PASSWORD}
+---
+app:
+  notification:
+    from: ${MAIL_FROM:no-reply@pcom.local}
+# SMTP is enabled by setting SPRING_MAIL_HOST (+ SPRING_MAIL_PORT/USERNAME/PASSWORD) in the environment; otherwise e-mails are only logged.

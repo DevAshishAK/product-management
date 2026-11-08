@@ -1,0 +1,7 @@
+server:
+  port: 8083
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/inventorydb}
+    username: ${DB_USER:inventory_svc}
+    password: ${DB_PASSWORD}

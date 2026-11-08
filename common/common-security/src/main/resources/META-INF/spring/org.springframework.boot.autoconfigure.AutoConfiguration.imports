@@ -1,0 +1,3 @@
+com.pcom.common.security.PcomSecurityAutoConfiguration
+com.pcom.common.security.ServiceAuthAutoConfiguration
+com.pcom.common.security.OpenApiAutoConfiguration

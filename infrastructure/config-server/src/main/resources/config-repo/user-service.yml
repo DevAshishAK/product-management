@@ -1,0 +1,13 @@
+server:
+  port: 8081
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/userdb}
+    username: ${DB_USER:user_svc}
+    password: ${DB_PASSWORD}
+app:
+  security:
+    public-paths: /api/v1/users/register
+  bootstrap:
+    admin-email: ${BOOTSTRAP_ADMIN_EMAIL:admin@pcom.local}
+    admin-password: ${BOOTSTRAP_ADMIN_PASSWORD:}

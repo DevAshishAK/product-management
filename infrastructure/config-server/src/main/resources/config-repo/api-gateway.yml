@@ -1,0 +1,223 @@
+server:
+  port: 8080
+spring:
+  reactor:
+    context-propagation: auto
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+  cloud:
+    gateway:
+      httpclient:
+        connect-timeout: 2000
+        response-timeout: 15s
+      default-filters:
+        - RemoveRequestHeader=Cookie
+        - RemoveRequestHeader=X-On-Behalf-Of        # only services may set this header, never external clients
+        - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+      routes:
+        - id: token-service
+          uri: lb://token-service
+          predicates:
+            - Path=/oauth2/token,/oauth2/revoke,/.well-known/jwks.json
+          filters:
+            - name: RequestRateLimiter            # API rate limiting / throttling (token bucket in Redis)
+              args:
+                redis-rate-limiter.replenishRate: 5
+                redis-rate-limiter.burstCapacity: 10
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: token-service
+                fallbackUri: forward:/fallback/token
+            - name: Retry
+              args:
+                retries: 2
+                methods: GET
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE
+                backoff: {firstBackoff: 100ms, maxBackoff: 1s, factor: 2}
+        - id: user-service
+          uri: lb://user-service
+          predicates:
+            - Path=/api/v1/users/**,/api/v1/roles/**
+          filters:
+            - name: RequestRateLimiter            # API rate limiting / throttling (token bucket in Redis)
+              args:
+                redis-rate-limiter.replenishRate: 20
+                redis-rate-limiter.burstCapacity: 40
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: user-service
+                fallbackUri: forward:/fallback/user
+            - name: Retry
+              args:
+                retries: 2
+                methods: GET
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE
+                backoff: {firstBackoff: 100ms, maxBackoff: 1s, factor: 2}
+        - id: product-service
+          uri: lb://product-service
+          predicates:
+            - Path=/api/v1/products/**,/api/v1/categories/**
+          filters:
+            - name: RequestRateLimiter            # API rate limiting / throttling (token bucket in Redis)
+              args:
+                redis-rate-limiter.replenishRate: 50
+                redis-rate-limiter.burstCapacity: 100
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: product-service
+                fallbackUri: forward:/fallback/product
+            - name: Retry
+              args:
+                retries: 2
+                methods: GET
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE
+                backoff: {firstBackoff: 100ms, maxBackoff: 1s, factor: 2}
+        - id: order-service
+          uri: lb://order-service
+          predicates:
+            - Path=/api/v1/orders/**
+          filters:
+            - name: RequestRateLimiter            # API rate limiting / throttling (token bucket in Redis)
+              args:
+                redis-rate-limiter.replenishRate: 20
+                redis-rate-limiter.burstCapacity: 40
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: order-service
+                fallbackUri: forward:/fallback/order
+            - name: Retry
+              args:
+                retries: 2
+                methods: GET
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE
+                backoff: {firstBackoff: 100ms, maxBackoff: 1s, factor: 2}
+        - id: inventory-service
+          uri: lb://inventory-service
+          predicates:
+            - Path=/api/v1/inventory/**
+          filters:
+            - name: RequestRateLimiter            # API rate limiting / throttling (token bucket in Redis)
+              args:
+                redis-rate-limiter.replenishRate: 20
+                redis-rate-limiter.burstCapacity: 40
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: inventory-service
+                fallbackUri: forward:/fallback/inventory
+            - name: Retry
+              args:
+                retries: 2
+                methods: GET
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE
+                backoff: {firstBackoff: 100ms, maxBackoff: 1s, factor: 2}
+        - id: payment-service
+          uri: lb://payment-service
+          predicates:
+            - Path=/api/v1/payments/**
+          filters:
+            - name: RequestRateLimiter            # API rate limiting / throttling (token bucket in Redis)
+              args:
+                redis-rate-limiter.replenishRate: 20
+                redis-rate-limiter.burstCapacity: 40
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: payment-service
+                fallbackUri: forward:/fallback/payment
+            - name: Retry
+              args:
+                retries: 2
+                methods: GET
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE
+                backoff: {firstBackoff: 100ms, maxBackoff: 1s, factor: 2}
+        - id: invoice-service
+          uri: lb://invoice-service
+          predicates:
+            - Path=/api/v1/invoices/**
+          filters:
+            - name: RequestRateLimiter            # API rate limiting / throttling (token bucket in Redis)
+              args:
+                redis-rate-limiter.replenishRate: 20
+                redis-rate-limiter.burstCapacity: 40
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: invoice-service
+                fallbackUri: forward:/fallback/invoice
+            - name: Retry
+              args:
+                retries: 2
+                methods: GET
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE
+                backoff: {firstBackoff: 100ms, maxBackoff: 1s, factor: 2}
+        - id: notification-service
+          uri: lb://notification-service
+          predicates:
+            - Path=/api/v1/notifications/**
+          filters:
+            - name: RequestRateLimiter            # API rate limiting / throttling (token bucket in Redis)
+              args:
+                redis-rate-limiter.replenishRate: 20
+                redis-rate-limiter.burstCapacity: 40
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: notification-service
+                fallbackUri: forward:/fallback/notification
+            - name: Retry
+              args:
+                retries: 2
+                methods: GET
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE
+                backoff: {firstBackoff: 100ms, maxBackoff: 1s, factor: 2}
+        - id: audit-service
+          uri: lb://audit-service
+          predicates:
+            - Path=/api/v1/audit/**
+          filters:
+            - name: RequestRateLimiter            # API rate limiting / throttling (token bucket in Redis)
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: audit-service
+                fallbackUri: forward:/fallback/audit
+            - name: Retry
+              args:
+                retries: 2
+                methods: GET
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE
+                backoff: {firstBackoff: 100ms, maxBackoff: 1s, factor: 2}
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-size: 20
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 15s
+  timelimiter:
+    configs:
+      default:
+        timeout-duration: 10s
+app:
+  security:
+    token-introspect-url: ${TOKEN_INTROSPECT_URL:http://token-service/oauth2/introspect}

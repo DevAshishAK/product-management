@@ -1,0 +1,10 @@
+server:
+  port: 8085
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/paymentdb}
+    username: ${DB_USER:payment_svc}
+    password: ${DB_PASSWORD}
+app:
+  payment:
+    max-amount: ${PAYMENT_MAX_AMOUNT:100000}

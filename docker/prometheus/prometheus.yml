@@ -1,0 +1,29 @@
+global:
+  scrape_interval: 15s
+scrape_configs:
+  # every service that registered in Eureka is discovered automatically; actuator is protected with HTTP Basic (role OPS)
+  - job_name: pcom-services
+    eureka_sd_configs:
+      - server: http://discovery-server:8761/eureka
+        basic_auth:
+          username: eureka
+          password_file: /etc/prometheus/secrets/eureka_password
+    basic_auth:
+      username: ops
+      password_file: /etc/prometheus/secrets/ops_password
+    metrics_path: /actuator/prometheus
+    relabel_configs:
+      - source_labels: [__meta_eureka_app_name]
+        target_label: application
+  - job_name: discovery-server
+    basic_auth:
+      username: eureka
+      password_file: /etc/prometheus/secrets/eureka_password
+    metrics_path: /actuator/prometheus
+    static_configs: [{targets: ['discovery-server:8761']}]
+  - job_name: config-server
+    basic_auth:
+      username: config
+      password_file: /etc/prometheus/secrets/config_password
+    metrics_path: /actuator/prometheus
+    static_configs: [{targets: ['config-server:8888']}]

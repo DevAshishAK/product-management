@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: pcom
+    folder: PCOM
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

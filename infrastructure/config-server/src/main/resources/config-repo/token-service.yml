@@ -1,0 +1,43 @@
+server:
+  port: 9000
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/tokendb}
+    username: ${DB_USER:token_svc}
+    password: ${DB_PASSWORD}
+app:
+  security:
+    public-paths: /oauth2/**,/.well-known/**
+  token:
+    issuer: ${TOKEN_ISSUER:https://auth.pcom.local}
+    access-ttl: 15m
+    refresh-ttl: 7d
+    service-ttl: 10m
+    private-key: ${JWT_PRIVATE_KEY:}
+    public-key: ${JWT_PUBLIC_KEY:}
+    generate-key-if-missing: ${JWT_GENERATE_IF_MISSING:false}
+    clients:
+      - client-id: web-app                 # public client for SPAs / mobile apps (password + refresh grants)
+        public-client: true
+        grant-types: [password, refresh_token]
+      - client-id: api-gateway             # introspection (revocation checks)
+        secret: ${API_GATEWAY_SECRET:}
+        roles: [SERVICE]
+        grant-types: [client_credentials]
+      - client-id: order-service
+        secret: ${ORDER_SERVICE_SECRET:}
+        roles: [SERVICE]
+        grant-types: [client_credentials]
+      - client-id: invoice-service
+        secret: ${INVOICE_SERVICE_SECRET:}
+        roles: [SERVICE]
+        grant-types: [client_credentials]
+      - client-id: notification-service
+        secret: ${NOTIFICATION_SERVICE_SECRET:}
+        roles: [SERVICE]
+        grant-types: [client_credentials]
+      - client-id: partner-integration     # example external machine client (read-only catalog access)
+        secret: ${PARTNER_CLIENT_SECRET:}
+        roles: [PARTNER]
+        permissions: [product:read]
+        grant-types: [client_credentials]
