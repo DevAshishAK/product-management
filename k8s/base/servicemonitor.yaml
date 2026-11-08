@@ -1,0 +1,15 @@
+# Requires the Prometheus Operator (kube-prometheus-stack). Actuator is protected by HTTP Basic -> secret "ops-basic-auth" (keys: username, password).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pcom-services
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/part-of: pcom}
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: 15s
+      basicAuth:
+        username: {name: ops-basic-auth, key: username}
+        password: {name: ops-basic-auth, key: password}

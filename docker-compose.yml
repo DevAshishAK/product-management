@@ -1,0 +1,620 @@
+# Local development stack.  1) ./scripts/bootstrap-env.sh   2) docker compose --profile infra up -d   3) docker compose --profile apps up -d --build
+name: pcom
+networks:
+  pcom:
+volumes:
+  postgres-data:
+  mongo-data:
+  kafka-data:
+  grafana-data:
+  tempo-data:
+
+services:
+  # ---------------- data & messaging ----------------
+  postgres:
+    image: postgres:16-alpine
+    profiles: [infra, apps]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      USER_DB_PASSWORD: ${USER_DB_PASSWORD}
+      PRODUCT_DB_PASSWORD: ${PRODUCT_DB_PASSWORD}
+      INVENTORY_DB_PASSWORD: ${INVENTORY_DB_PASSWORD}
+      ORDER_DB_PASSWORD: ${ORDER_DB_PASSWORD}
+      PAYMENT_DB_PASSWORD: ${PAYMENT_DB_PASSWORD}
+      INVOICE_DB_PASSWORD: ${INVOICE_DB_PASSWORD}
+      NOTIFICATION_DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD}
+      TOKEN_DB_PASSWORD: ${TOKEN_DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [pcom]
+
+  mongo:
+    image: mongo:7
+    profiles: [infra, apps]
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+    volumes: [mongo-data:/data/db]
+    ports: ["27017:27017"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [pcom]
+
+  redis:
+    image: redis:7-alpine
+    profiles: [infra, apps]
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [pcom]
+
+  kafka:                                  # single-node KRaft broker (no ZooKeeper)
+    image: apache/kafka:3.8.1
+    profiles: [infra, apps]
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes: [kafka-data:/var/lib/kafka/data]
+    ports: ["29092:29092"]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    networks: [pcom]
+
+  # ---------------- observability ----------------
+  tempo:
+    image: grafana/tempo:2.6.1
+    profiles: [infra, apps]
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./docker/tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports: ["3200:3200", "4318:4318"]
+    networks: [pcom]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: [infra, apps]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/secrets:/etc/prometheus/secrets:ro
+    ports: ["9091:9090"]
+    networks: [pcom]
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    profiles: [infra, apps]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports: ["3000:3000"]
+    depends_on: [prometheus, tempo]
+    networks: [pcom]
+
+  # ---------------- platform ----------------
+  config-server:
+    build:
+      context: .
+      dockerfile: infrastructure/config-server/Dockerfile
+    image: pcom/config-server:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      CONFIG_USER: ${CONFIG_USER}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD}
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+    ports:
+      - "8888:8888"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8888/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+
+  discovery-server:
+    build:
+      context: .
+      dockerfile: infrastructure/discovery-server/Dockerfile
+    image: pcom/discovery-server:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      EUREKA_USER: ${EUREKA_USER}
+      EUREKA_PASSWORD: ${EUREKA_PASSWORD}
+      EUREKA_HOSTNAME: discovery-server
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8761/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+
+  token-service:
+    build:
+      context: .
+      dockerfile: services/token-service/Dockerfile
+    image: pcom/token-service:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      CONFIG_SERVER_URL: http://config-server:8888
+      CONFIG_USER: ${CONFIG_USER}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD}
+      EUREKA_URL: http://${EUREKA_USER}:${EUREKA_PASSWORD}@discovery-server:8761/eureka
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOKEN_JWKS_URI: http://token-service:9000/.well-known/jwks.json
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+      OPS_USER: ${OPS_USER}
+      OPS_PASSWORD: ${OPS_PASSWORD}
+      DB_URL: jdbc:postgresql://postgres:5432/tokendb
+      DB_USER: token_svc
+      DB_PASSWORD: ${TOKEN_DB_PASSWORD}
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY}
+      API_GATEWAY_SECRET: ${API_GATEWAY_SECRET}
+      ORDER_SERVICE_SECRET: ${ORDER_SERVICE_SECRET}
+      INVOICE_SERVICE_SECRET: ${INVOICE_SERVICE_SECRET}
+      NOTIFICATION_SERVICE_SECRET: ${NOTIFICATION_SERVICE_SECRET}
+      PARTNER_CLIENT_SECRET: ${PARTNER_CLIENT_SECRET}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+
+  user-service:
+    build:
+      context: .
+      dockerfile: services/user-service/Dockerfile
+    image: pcom/user-service:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      CONFIG_SERVER_URL: http://config-server:8888
+      CONFIG_USER: ${CONFIG_USER}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD}
+      EUREKA_URL: http://${EUREKA_USER}:${EUREKA_PASSWORD}@discovery-server:8761/eureka
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOKEN_JWKS_URI: http://token-service:9000/.well-known/jwks.json
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+      OPS_USER: ${OPS_USER}
+      OPS_PASSWORD: ${OPS_PASSWORD}
+      SERVICE_CLIENT_SECRET: ${USER_SERVICE_SECRET}
+      DB_URL: jdbc:postgresql://postgres:5432/userdb
+      DB_USER: user_svc
+      DB_PASSWORD: ${USER_DB_PASSWORD}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+
+  product-service:
+    build:
+      context: .
+      dockerfile: services/product-service/Dockerfile
+    image: pcom/product-service:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      CONFIG_SERVER_URL: http://config-server:8888
+      CONFIG_USER: ${CONFIG_USER}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD}
+      EUREKA_URL: http://${EUREKA_USER}:${EUREKA_PASSWORD}@discovery-server:8761/eureka
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOKEN_JWKS_URI: http://token-service:9000/.well-known/jwks.json
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+      OPS_USER: ${OPS_USER}
+      OPS_PASSWORD: ${OPS_PASSWORD}
+      SERVICE_CLIENT_SECRET: ${PRODUCT_SERVICE_SECRET}
+      DB_URL: jdbc:postgresql://postgres:5432/productdb
+      DB_USER: product_svc
+      DB_PASSWORD: ${PRODUCT_DB_PASSWORD}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+
+  inventory-service:
+    build:
+      context: .
+      dockerfile: services/inventory-service/Dockerfile
+    image: pcom/inventory-service:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      CONFIG_SERVER_URL: http://config-server:8888
+      CONFIG_USER: ${CONFIG_USER}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD}
+      EUREKA_URL: http://${EUREKA_USER}:${EUREKA_PASSWORD}@discovery-server:8761/eureka
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOKEN_JWKS_URI: http://token-service:9000/.well-known/jwks.json
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+      OPS_USER: ${OPS_USER}
+      OPS_PASSWORD: ${OPS_PASSWORD}
+      SERVICE_CLIENT_SECRET: ${INVENTORY_SERVICE_SECRET}
+      DB_URL: jdbc:postgresql://postgres:5432/inventorydb
+      DB_USER: inventory_svc
+      DB_PASSWORD: ${INVENTORY_DB_PASSWORD}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+
+  order-service:
+    build:
+      context: .
+      dockerfile: services/order-service/Dockerfile
+    image: pcom/order-service:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      CONFIG_SERVER_URL: http://config-server:8888
+      CONFIG_USER: ${CONFIG_USER}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD}
+      EUREKA_URL: http://${EUREKA_USER}:${EUREKA_PASSWORD}@discovery-server:8761/eureka
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOKEN_JWKS_URI: http://token-service:9000/.well-known/jwks.json
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+      OPS_USER: ${OPS_USER}
+      OPS_PASSWORD: ${OPS_PASSWORD}
+      SERVICE_CLIENT_SECRET: ${ORDER_SERVICE_SECRET}
+      DB_URL: jdbc:postgresql://postgres:5432/orderdb
+      DB_USER: order_svc
+      DB_PASSWORD: ${ORDER_DB_PASSWORD}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8084:8084"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8084/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: services/payment-service/Dockerfile
+    image: pcom/payment-service:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      CONFIG_SERVER_URL: http://config-server:8888
+      CONFIG_USER: ${CONFIG_USER}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD}
+      EUREKA_URL: http://${EUREKA_USER}:${EUREKA_PASSWORD}@discovery-server:8761/eureka
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOKEN_JWKS_URI: http://token-service:9000/.well-known/jwks.json
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+      OPS_USER: ${OPS_USER}
+      OPS_PASSWORD: ${OPS_PASSWORD}
+      SERVICE_CLIENT_SECRET: ${PAYMENT_SERVICE_SECRET}
+      DB_URL: jdbc:postgresql://postgres:5432/paymentdb
+      DB_USER: payment_svc
+      DB_PASSWORD: ${PAYMENT_DB_PASSWORD}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+
+  invoice-service:
+    build:
+      context: .
+      dockerfile: services/invoice-service/Dockerfile
+    image: pcom/invoice-service:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      CONFIG_SERVER_URL: http://config-server:8888
+      CONFIG_USER: ${CONFIG_USER}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD}
+      EUREKA_URL: http://${EUREKA_USER}:${EUREKA_PASSWORD}@discovery-server:8761/eureka
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOKEN_JWKS_URI: http://token-service:9000/.well-known/jwks.json
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+      OPS_USER: ${OPS_USER}
+      OPS_PASSWORD: ${OPS_PASSWORD}
+      SERVICE_CLIENT_SECRET: ${INVOICE_SERVICE_SECRET}
+      DB_URL: jdbc:postgresql://postgres:5432/invoicedb
+      DB_USER: invoice_svc
+      DB_PASSWORD: ${INVOICE_DB_PASSWORD}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8086:8086"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8086/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+    image: pcom/notification-service:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      CONFIG_SERVER_URL: http://config-server:8888
+      CONFIG_USER: ${CONFIG_USER}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD}
+      EUREKA_URL: http://${EUREKA_USER}:${EUREKA_PASSWORD}@discovery-server:8761/eureka
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOKEN_JWKS_URI: http://token-service:9000/.well-known/jwks.json
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+      OPS_USER: ${OPS_USER}
+      OPS_PASSWORD: ${OPS_PASSWORD}
+      SERVICE_CLIENT_SECRET: ${NOTIFICATION_SERVICE_SECRET}
+      DB_URL: jdbc:postgresql://postgres:5432/notificationdb
+      DB_USER: notification_svc
+      DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8087:8087"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8087/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+
+  audit-service:
+    build:
+      context: .
+      dockerfile: services/audit-service/Dockerfile
+    image: pcom/audit-service:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      CONFIG_SERVER_URL: http://config-server:8888
+      CONFIG_USER: ${CONFIG_USER}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD}
+      EUREKA_URL: http://${EUREKA_USER}:${EUREKA_PASSWORD}@discovery-server:8761/eureka
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOKEN_JWKS_URI: http://token-service:9000/.well-known/jwks.json
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+      OPS_USER: ${OPS_USER}
+      OPS_PASSWORD: ${OPS_PASSWORD}
+      SERVICE_CLIENT_SECRET: ${AUDIT_SERVICE_SECRET}
+      MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongo:27017/auditdb?authSource=admin
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    ports:
+      - "8088:8088"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8088/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: infrastructure/api-gateway/Dockerfile
+    image: pcom/api-gateway:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      CONFIG_SERVER_URL: http://config-server:8888
+      CONFIG_USER: ${CONFIG_USER}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD}
+      EUREKA_URL: http://${EUREKA_USER}:${EUREKA_PASSWORD}@discovery-server:8761/eureka
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOKEN_JWKS_URI: http://token-service:9000/.well-known/jwks.json
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+      OPS_USER: ${OPS_USER}
+      OPS_PASSWORD: ${OPS_PASSWORD}
+      SERVICE_CLIENT_SECRET: ${API_GATEWAY_SECRET}
+      REDIS_HOST: redis
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+
+  monitoring-service:
+    build:
+      context: .
+      dockerfile: infrastructure/monitoring-service/Dockerfile
+    image: pcom/monitoring-service:local
+    profiles: [apps]
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      CONFIG_SERVER_URL: http://config-server:8888
+      CONFIG_USER: ${CONFIG_USER}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD}
+      EUREKA_URL: http://${EUREKA_USER}:${EUREKA_PASSWORD}@discovery-server:8761/eureka
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOKEN_JWKS_URI: http://token-service:9000/.well-known/jwks.json
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+      OPS_USER: ${OPS_USER}
+      OPS_PASSWORD: ${OPS_PASSWORD}
+      ADMIN_UI_USER: admin
+      ADMIN_UI_PASSWORD: ${ADMIN_UI_PASSWORD}
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/actuator/health/readiness | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [pcom]
+

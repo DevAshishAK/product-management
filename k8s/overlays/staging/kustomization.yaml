@@ -1,0 +1,57 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: pcom-staging
+resources:
+  - ../../base
+  - ../../base/servicemonitor.yaml
+images:
+  - name: ghcr.io/your-org/pcom/user-service
+    newTag: latest
+  - name: ghcr.io/your-org/pcom/product-service
+    newTag: latest
+  - name: ghcr.io/your-org/pcom/inventory-service
+    newTag: latest
+  - name: ghcr.io/your-org/pcom/order-service
+    newTag: latest
+  - name: ghcr.io/your-org/pcom/payment-service
+    newTag: latest
+  - name: ghcr.io/your-org/pcom/invoice-service
+    newTag: latest
+  - name: ghcr.io/your-org/pcom/notification-service
+    newTag: latest
+  - name: ghcr.io/your-org/pcom/audit-service
+    newTag: latest
+  - name: ghcr.io/your-org/pcom/token-service
+    newTag: latest
+  - name: ghcr.io/your-org/pcom/config-server
+    newTag: latest
+  - name: ghcr.io/your-org/pcom/discovery-server
+    newTag: latest
+  - name: ghcr.io/your-org/pcom/api-gateway
+    newTag: latest
+  - name: ghcr.io/your-org/pcom/monitoring-service
+    newTag: latest
+patches:
+  - target: {kind: Deployment}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target: {kind: HorizontalPodAutoscaler}
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+  - target: {kind: PodDisruptionBudget}
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 1
+  - target: {kind: Ingress, name: pcom-api}
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: api.staging.pcom.example.com
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: api.staging.pcom.example.com
